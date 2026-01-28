@@ -5,116 +5,129 @@ import re
 
 app = FastAPI()
 
-def clean_vtt_text(vtt_content):
+# --- HELPER: VTT Cleaner (To make it look like a real transcript) ---
+def clean_vtt_to_text(vtt_content: str):
     """
-    VTT (Subtitle File) se kachra (Timestamps, Tags) hatane ka logic
+    VTT file ke kachre (timestamps, tags, headers) ko hatakar 
+    saaf text return karta hai.
     """
-    lines = vtt_content.split('\n')
-    cleaned_lines = []
-    seen_lines = set()
-
+    lines = vtt_content.splitlines()
+    clean_lines = []
+    seen_lines = set() # Duplicates hatane ke liye
+    
+    # Regex to match timestamps like "00:00:05.000 --> 00:00:07.000"
+    timestamp_pattern = re.compile(r'\d{2}:\d{2}:\d{2}\.\d{3}\s-->\s\d{2}:\d{2}:\d{2}\.\d{3}')
+    
     for line in lines:
-        # 1. Header aur Metadata hatao
-        if 'WEBVTT' in line or 'Kind:' in line or 'Language:' in line:
+        # Headers aur metadata ignore karo
+        if line.startswith("WEBVTT") or line.strip() == "" or line.startswith("Kind:") or line.startswith("Language:"):
             continue
-        # 2. Timestamps hatao (00:00:00.000 --> ...)
-        if '-->' in line:
+        
+        # Timestamp wali line ignore karo
+        if timestamp_pattern.search(line):
             continue
-        # 3. Tags hatao (<c>, <00:00:01> etc)
+            
+        # Tags (<c>, <b> etc) hatao
         text = re.sub(r'<[^>]+>', '', line).strip()
         
-        # 4. Empty lines aur Duplicate lines hatao
+        # Agar text khali nahi hai aur duplicate nahi hai to add karo
+        # (Youtube ke vtt me aksar lines repeat hoti hain, isliye check zaruri hai)
         if text and text not in seen_lines:
-            cleaned_lines.append(text)
+            clean_lines.append(text)
             seen_lines.add(text)
             
-    return " ".join(cleaned_lines)
+    return " ".join(clean_lines)
+
+# --- CORE LOGIC: YT-DLP EXTRACTOR ---
+def get_yt_dlp_transcript(video_url):
+    ydl_opts = {
+        'skip_download': True,      # Video download mat karna
+        'writesubtitles': True,     # Manual subs chahiye
+        'writeautomaticsub': True,  # Auto-generated bhi chalega
+        'subtitleslangs': ['en', 'hi'], # Pehle English, fir Hindi dhundo
+        'quiet': True,              # Terminal me kachra mat dikhao
+        'no_warnings': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 1. Sirf Info extract karo (Network call)
+            info = ydl.extract_info(video_url, download=False)
+            
+            # 2. Subtitles dhundo (Manual > Auto)
+            subs = info.get('subtitles', {})
+            auto_subs = info.get('automatic_captions', {})
+            
+            final_url = None
+            
+            # Priority 1: Manual English
+            if 'en' in subs:
+                final_url = subs['en'][0]['url'] # JSON3 ya VTT url
+            # Priority 2: Manual Hindi
+            elif 'hi' in subs:
+                final_url = subs['hi'][0]['url']
+            # Priority 3: Auto English
+            elif 'en' in auto_subs:
+                final_url = auto_subs['en'][0]['url']
+            # Priority 4: Auto Hindi
+            elif 'hi' in auto_subs:
+                final_url = auto_subs['hi'][0]['url']
+                
+            # Agar abhi bhi nahi mila, to jo pehla available hai wo utha lo
+            if not final_url:
+                all_subs = {**subs, **auto_subs}
+                if all_subs:
+                    first_key = list(all_subs.keys())[0]
+                    final_url = all_subs[first_key][0]['url']
+            
+            if final_url:
+                # 3. URL mil gaya, ab content download karo (text format me)
+                # Note: yt-dlp json3 format deta hai default me, par hum 'vtt' force kar sakte hain
+                # lekin simple request se text uthana safe hai.
+                response = requests.get(final_url)
+                if response.status_code == 200:
+                    # Agar JSON format hai to alag parsing, VTT hai to alag
+                    # Zyadatar yt-dlp APIs json3 ya vtt return karte hain based on params.
+                    # Hum raw text ko clean karenge.
+                    return clean_vtt_to_text(response.text)
+                    
+            return None
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+# --- API ENDPOINTS ---
 
 @app.get("/")
 def home():
-    return {"status": "Online", "engine": "yt-dlp Pro"}
+    return {"status": "Online", "engine": "yt-dlp (Brahmastra)"}
 
 @app.get("/api/transcript")
-def get_yt_transcript(url: str):
-    try:
-        # yt-dlp Options: Hame video nahi, sirf 'Metadata' chahiye
-        ydl_opts = {
-            'skip_download': True,       # Video download mat karna
-            'writeautomaticsub': True,   # Auto-generated captions uthao
-            'writesub': True,            # Manual captions bhi uthao
-            'subtitleslangs': ['en', 'hi', 'en-orig', 'hi-latn'], # English/Hindi prefer karo
-            'quiet': True,
-            'no_warnings': True
+def get_transcript(url: str):
+    if not url:
+        return {"status": "error", "message": "URL to de bhai!"}
+
+    # Asli yt-dlp logic
+    transcript_text = get_yt_dlp_transcript(url)
+
+    if transcript_text:
+        separator = "\n" + "="*40 + "\n"
+        final_output = (
+            f"🎥 VIDEO TRANSCRIPT (Via Own Logic)\n"
+            f"{separator}"
+            f"{transcript_text}"
+            f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ By @lakshitpatidar\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        return {
+            "status": "success", 
+            "data": final_output
         }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            # 1. Check for Captions (Auto or Manual)
-            # Pehle Automatic check karo (Kyunki error wahi aa raha tha)
-            captions = info.get('automatic_captions') or info.get('subtitles')
-            
-            if not captions:
-                return {
-                    "status": "error", 
-                    "message": "❌ Bhai is video ka koi bhi text data (Audio-to-Text) YouTube ke server par nahi hai."
-                }
-
-            # 2. Best Language Select Karna (Priority: English -> Hindi)
-            # yt-dlp data structure: {'en': [{'url': '...', 'ext': 'json3'}], ...}
-            lang_code = 'en'
-            if 'en' not in captions and 'hi' in captions:
-                lang_code = 'hi'
-            elif 'en' not in captions:
-                # Agar En/Hi nahi hai to jo pehla mile wo utha lo
-                lang_code = list(captions.keys())[0]
-
-            # 3. Subtitle URL nikalna (VTT format is easiest to clean)
-            # Hum specific format 'vtt' dhundenge
-            subs_list = captions[lang_code]
-            sub_url = None
-            
-            for sub in subs_list:
-                # Prefer VTT for easy cleaning
-                if sub.get('ext') == 'vtt':
-                    sub_url = sub['url']
-                    break
-            
-            # Agar VTT nahi mila, to pehla wala lelo (usually json3 or srv1)
-            if not sub_url:
-                sub_url = subs_list[0]['url']
-
-            # 4. URL se Text Download karna
-            response = requests.get(sub_url)
-            raw_text = response.text
-
-            # 5. Text Cleaning
-            final_text = clean_vtt_text(raw_text)
-            
-            # 6. Summary Logic (Simple frequency based)
-            words = final_text.split()
-            summary = " ".join(words[:50]) + "..." # Fallback summary
-
-            # Formatting Response
-            separator = "\n" + "="*40 + "\n"
-            final_output = (
-                f"🎥 VIDEO TRANSCRIPT (Engine: yt-dlp)\n"
-                f"🔗 Video ID: {info.get('id')}\n"
-                f"🗣️ Language: {lang_code}\n"
-                f"{separator}"
-                f"{final_text}"
-                f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚡ Generated by @lakshitpatidar\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-
-            return {
-                "status": "success",
-                "video_title": info.get('title'),
-                "transcript_text": final_output,
-                "data": final_output # For MacroDroid
-            }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-            
+    else:
+        return {
+            "status": "error", 
+            "message": "❌ Transcript nahi mila. Shayad video private hai ya captions exist hi nahi karte."
+        }
+        
