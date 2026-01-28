@@ -25,15 +25,13 @@ def format_time(seconds):
 
 def generate_smart_summary(text_list, num_sentences=10):
     """
-    Native Python Logic se Summary banana (Fast & No Crash)
-    Ye sabse zyada repeat hone wale important words ko dhund kar
-    top sentences select karta hai.
+    Summary Logic: Top keywords ke basis par important lines nikalna
     """
     full_text = " ".join([t['text'] for t in text_list])
     words = re.findall(r'\w+', full_text.lower())
     
-    # Common words jo ignore karne hain (Stopwords)
-    stopwords = set(['the', 'is', 'in', 'at', 'of', 'on', 'and', 'a', 'to', 'it', 'that', 'this', 'for', 'with', 'you', 'are', 'i', 'am'])
+    # Common words (stopwords) jo count nahi karne
+    stopwords = set(['the', 'is', 'in', 'at', 'of', 'on', 'and', 'a', 'to', 'it', 'that', 'this', 'for', 'with', 'you', 'are', 'i', 'am', 'so', 'was', 'my'])
     
     # Word Frequency Count
     word_freq = Counter(w for w in words if w not in stopwords)
@@ -47,10 +45,10 @@ def generate_smart_summary(text_list, num_sentences=10):
         for word in re.findall(r'\w+', sentence.lower()):
             if word in word_freq:
                 score += word_freq[word]
-        # Normalize score
+        # Score normalize karna
         ranked_sentences.append((score / max_freq, sentence))
     
-    # Top sentences pick karna
+    # Top sentences pick karna (High score wale)
     ranked_sentences.sort(key=lambda x: x[0], reverse=True)
     top_sentences = [s[1] for s in ranked_sentences[:num_sentences]]
     
@@ -66,10 +64,11 @@ def home():
 def get_full_transcript(url: str):
     video_id = extract_video_id(url)
     if not video_id:
-        return {"status": "error", "message": "Invalid URL"}
+        return {"status": "error", "message": "Invalid URL provided."}
 
     try:
-        # 1. Fetch Transcript
+        # 1. Transcript Fetch Karna
+        # 'list' wala error hatane ke liye direct call kar rahe hain
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['hi', 'en', 'en-IN'])
         
         # --- PART 1: WITH TIMESTAMPS ---
@@ -83,8 +82,8 @@ def get_full_transcript(url: str):
         plain_text_list = [item['text'] for item in transcript]
         full_plain_output = " ".join(plain_text_list)
 
-        # --- PART 3: DETAILED SMART SUMMARY ---
-        # Logic: Agar video lambi hai (100+ lines) to top 15 lines nikalo, nahi to top 5
+        # --- PART 3: SMART SUMMARY ---
+        # Agar video lambi hai (100+ lines) to top 15 lines, nahi to top 5
         summary_length = 15 if len(transcript) > 100 else 5
         smart_summary = generate_smart_summary(transcript, num_sentences=summary_length)
 
@@ -95,11 +94,11 @@ def get_full_transcript(url: str):
             f"🎥 VIDEO TRANSCRIPT & SUMMARY\n"
             f"🔗 ID: {video_id}\n"
             f"{separator}"
-            f"📢 SECTION 1: TIMESTAMPS (For Navigation)\n"
+            f"📢 SECTION 1: TIMESTAMPS (Navigation)\n"
             f"{separator}"
             f"{full_timed_output}\n"
             f"{separator}"
-            f"📄 SECTION 2: CLEAN READING (No Timestamps)\n"
+            f"📄 SECTION 2: CLEAN READING (Text Only)\n"
             f"{separator}"
             f"{full_plain_output}\n"
             f"{separator}"
@@ -118,5 +117,11 @@ def get_full_transcript(url: str):
         }
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
-
+        error_msg = str(e)
+        if "Subtitles are disabled" in error_msg:
+            return {"status": "error", "message": "⚠️ Is video ke subtitles disabled hain."}
+        elif "No transcript found" in error_msg:
+            return {"status": "error", "message": "⚠️ English/Hindi subtitles nahi mile."}
+        else:
+            return {"status": "error", "message": f"❌ Error: {error_msg}"}
+                
